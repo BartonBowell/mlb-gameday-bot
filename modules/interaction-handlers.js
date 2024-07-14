@@ -1,19 +1,66 @@
 const { AttachmentBuilder, EmbedBuilder } = require('discord.js');
 const globalCache = require('./global-cache');
 const mlbAPIUtil = require('./MLB-API-util');
-const { joinImages } = require('join-images');
 const globals = require('../config/globals');
 const commandUtil = require('./command-util');
 const queries = require('../database/queries.js');
 
-module.exports = {
-
+module.exports = {leadersHandler,streaksHandler,
+    playerStatsHandler,
     helpHandler: async (interaction) => {
         console.info(`HELP command invoked by guild: ${interaction.guildId}`);
         interaction.reply({ content: globals.HELP_MESSAGE, ephemeral: true });
-    },
-
-    startersHandler: async (interaction) => {
+    },bullpenHandler: async (interaction) => {
+        console.info(`BULLPEN command invoked by guild: ${interaction.guildId}`);
+        await interaction.deferReply();
+      
+        try {
+          const jsonString = await mlbAPIUtil.marinersBullpenUsage();
+          console.log(jsonString); // Temporarily log the JSON string to inspect its structure
+      
+          const json = JSON.parse(jsonString);
+      
+          if (!json || !json.SEA) {
+            throw new Error('Invalid JSON data received');
+          }
+      
+          // Extract the relevant data from the JSON
+          const data = json.SEA.map(player => ({
+            player: player.player,
+            fri: player.day5,
+            sat: player.day4,
+            sun: player.day3,
+            mon: player.day2,
+            tues: player.day1,
+            last3: player.last3,
+            last5: player.last5
+          }));
+      
+          // Debug: Log the extracted data before passing it to generate the table
+          console.debug("Extracted data for bullpen usage:", JSON.stringify(data, null, 2));
+      
+          // Generate the HTML table
+          const tableHTML = commandUtil.generateBullpenUsageTable(data);
+      
+          // Get the screenshot of the table
+          const screenshot = await commandUtil.getBullpenUsageScreenshot(tableHTML);
+      
+          await interaction.followUp({
+            content: 'Here\'s the current bullpen usage for the Seattle Mariners:',
+            files: [{ attachment: screenshot, name: 'bullpen_usage.png' }],
+            ephemeral: false
+          });
+        } catch (error) {
+          console.error('Error in bullpen command:', error);
+          await interaction.followUp({
+            content: 'There was an error fetching the bullpen usage. Please try again later. If the issue persists, please contact the developer.',
+            ephemeral: true
+          });
+        }
+      },
+            
+      
+      startersHandler: async (interaction) => {
         console.info(`STARTERS command invoked by guild: ${interaction.guildId}`);
         await interaction.deferReply();
         // as opposed to other commands, this one will look for the nearest game that is not finished (AKA in "Live" or "Preview" status).
@@ -30,36 +77,25 @@ module.exports = {
         const hydratedHomeProbable = await commandUtil.hydrateProbable(probables.homeProbable);
         const hydratedAwayProbable = await commandUtil.hydrateProbable(probables.awayProbable);
 
-        joinImages([hydratedHomeProbable.spot, hydratedAwayProbable.spot],
-            { direction: 'horizontal', offset: 10, margin: 0, color: 'transparent' })
-            .then(async (img) => {
-                const attachment = new AttachmentBuilder((await img.png().toBuffer()), { name: 'matchupSpots.png' });
-                const myEmbed = new EmbedBuilder()
-                    .setTitle('Pitching Matchup - ' + commandUtil.constructGameDisplayString(game))
-                    .setImage('attachment://matchupSpots.png')
-                    .addFields({
-                        name: (hydratedHomeProbable.handedness
-                            ? hydratedHomeProbable.handedness + 'HP **'
-                            : '**') + (probables.homeProbableLastName || 'TBD') + '** (' + probables.homeAbbreviation + ')',
-                        value: buildPitchingStatsMarkdown(hydratedHomeProbable.pitchingStats, hydratedHomeProbable.pitchMix),
-                        inline: true
-                    })
-                    .addFields({
-                        name: (hydratedAwayProbable.handedness
-                            ? hydratedAwayProbable.handedness + 'HP **'
-                            : '**') + (probables.awayProbableLastName || 'TBD') + '** (' + probables.awayAbbreviation + ')',
-                        value: buildPitchingStatsMarkdown(hydratedAwayProbable.pitchingStats, hydratedAwayProbable.pitchMix),
-                        inline: true
-                    });
-                await interaction.followUp( {
-                    ephemeral: false,
-                    files: [attachment],
-                    embeds: [myEmbed],
-                    components: [],
-                    content: ''
-                });
+        try {
+            const matchupImage = await commandUtil.buildPitchingMatchupImage(game, hydratedHomeProbable, hydratedAwayProbable, probables);
+
+            await interaction.followUp({
+                ephemeral: false,
+                files: [new AttachmentBuilder(matchupImage, { name: 'matchup.png' })],
+                components: [],
+                content: ''
             });
+        } catch (error) {
+            console.error('Error generating pitching matchup image:', error);
+            await interaction.followUp({
+                content: 'There was an error generating the pitching matchup image. Please try again later.',
+                ephemeral: true
+            });
+        }
     },
+
+ 
 
     scheduleHandler: async (interaction) => {
         console.info(`SCHEDULE command invoked by guild: ${interaction.guildId}`);
@@ -298,6 +334,82 @@ module.exports = {
             });
         }
     },
+    lineupSplitsHandler: async (interaction) => {
+        console.info(`LINEUP SPLITS command invoked by guild: ${interaction.guildId}`);
+    
+        if (!globalCache.values.game.isDoubleHeader) {
+            await interaction.deferReply();
+        }
+        const toHandle = await commandUtil.screenInteraction(interaction);
+    
+        if (toHandle) {
+            try {
+                const game = globalCache.values.game.isDoubleHeader
+                    ? globalCache.values.nearestGames.find(game => game.gamePk === parseInt(toHandle.customId))
+                    : globalCache.values.nearestGames[0];
+    
+                if (!game) {
+                    throw new Error('No game found');
+                }
+    
+                const lineupData = await mlbAPIUtil.lineup(game.gamePk, parseInt(process.env.TEAM_ID));
+    
+                if (lineupData?.dates[0]?.games[0]?.status?.detailedState === 'Postponed') {
+                    await commandUtil.giveFinalCommandResponse(toHandle, {
+                        content: commandUtil.constructGameDisplayString(game) + ' - this game is postponed.',
+                        ephemeral: false,
+                        components: []
+                    });
+                    return;
+                }
+    
+                const ourTeam = lineupData.dates[0].games[0].teams.home.team.id === parseInt(process.env.TEAM_ID)
+                    ? lineupData.dates[0].games[0].lineups.homePlayers
+                    : lineupData.dates[0].games[0].lineups.awayPlayers;
+    
+                if (!ourTeam || ourTeam.length === 0) {
+                    await commandUtil.giveFinalCommandResponse(toHandle, {
+                        content: commandUtil.constructGameDisplayString(game) + ' - lineup is not available yet.',
+                        ephemeral: false,
+                        components: []
+                    });
+                    return;
+                }
+    
+                const personIds = ourTeam.map(player => player.id).join(',');
+                const playerSplitsData = await mlbAPIUtil.playerSplits(personIds);
+                const playerSeasonData = await mlbAPIUtil.peopleStr(personIds);
+        if (!game) {
+            await interaction.followUp({
+                content: 'No game found that isn\'t Final. Is today/tomorrow an off day?',
+                ephemeral: false
+            });
+            return;
+        }
+        const matchup = await mlbAPIUtil.matchup(game.gamePk);
+        const probables = matchup.probables;
+        const opposingPitcher = matchup.homeId !== parseInt(process.env.TEAM_ID) ? probables.homeProbable : probables.awayProbable;
+        const pitcherName = matchup.homeId !== parseInt(process.env.TEAM_ID) ? probables.homeProbableLastName : probables.awayProbableLastName;
+        
+        console.log('Player Splits Data:', playerSplitsData);
+        
+        const lineupSplitsTable = await commandUtil.getLineupSplitsTable(ourTeam, playerSplitsData.people, playerSeasonData.people, opposingPitcher, pitcherName);
+                await commandUtil.giveFinalCommandResponse(toHandle, {
+                    ephemeral: false,
+                    content: commandUtil.constructGameDisplayString(game) + '\n',
+                    components: [],
+                    files: [new AttachmentBuilder(lineupSplitsTable, { name: 'lineup_splits.png' })]
+                });
+            } catch (error) {
+                console.error('Error in lineupSplitsHandler:', error);
+                await commandUtil.giveFinalCommandResponse(toHandle, {
+                    content: 'An error occurred while fetching lineup splits. Please try again later.',
+                    ephemeral: true,
+                    components: []
+                });
+            }
+        }
+    },
 
     lineupHandler: async (interaction) => {
         console.info(`LINEUP command invoked by guild: ${interaction.guildId}`);
@@ -336,6 +448,7 @@ module.exports = {
             });
         }
     },
+
 
     highlightsHandler: async (interaction) => {
         console.info(`HIGHLIGHTS command invoked by guild: ${interaction.guildId}`);
@@ -594,7 +707,118 @@ function getScoreString (liveFeed, currentPlayJSON) {
         : liveFeed.gameData.teams.away.abbreviation + ' ' + awayScore + ', **' +
         liveFeed.gameData.teams.home.abbreviation + ' ' + homeScore + '**');
 }
-
+async function streaksHandler(interaction) {
+    const streakType = interaction.options.getString('streaktype');
+    const streakSpan = interaction.options.getString('streakspan');
+    const season = interaction.options.getString('season');
+    const sportId = interaction.options.getString('sportid');
+    const limit = 10;
+  
+    try {
+      const streaksData = await mlbAPIUtil.getStreaks(streakType, streakSpan, season, limit);
+      const streaks = streaksData.stats;
+  
+      if (!streaks) {
+        await interaction.reply(`No streaks found for the specified criteria.`);
+        return;
+      }
+  
+      const visual = await commandUtil.generateStreaksVisual(streaks, streakType, streakSpan);
+  
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ files: [{ attachment: visual, name: 'streaks.png' }] });
+      } else {
+        await interaction.followUp({ files: [{ attachment: visual, name: 'streaks.png' }] });
+      }
+    } catch (error) {
+      console.error('Error in streaksHandler:', error);
+      // ... (existing error handling)
+    }
+  }
+async function leadersHandler(interaction) {
+    const category = interaction.options.getString('category');
+    const limit = interaction.options.getInteger('limit') || 10;
+    let statGroup = interaction.options.getString('statgroup');
+  
+    // Check if the category is a pitching stat
+    const pitchingStats = [
+        'era', 'whip', 'innings_pitched', 'hits_allowed', 'runs_allowed', 'earned_runs',
+        'home_runs_allowed', 'walks', 'strikeouts_per_nine', 'walks_per_nine', 'hits_per_nine',
+        'strikeouts_per_walk', 'complete_games', 'shutouts', 'hit_batsmen', 'balks',
+        'wild_pitches', 'pickoffs', 'inherited_runners', 'inherited_runners_scored',
+        'games_finished', 'games_pitched', 'saves', 'holds', 'blown_saves', 'save_opportunities',
+        'batters_faced', 'pitches_thrown', 'strikes_thrown', 'strike_percentage', 'first_pitch_strikes',
+        'first_pitch_strike_percentage', 'strikeout_percentage', 'strikeout_to_walk_ratio',
+        'ground_ball_to_fly_ball_ratio', 'ground_ball_percentage', 'fly_ball_percentage',
+        'line_drive_percentage', 'swinging_strike_percentage', 'first_strike_swing_percentage',
+        'contact_percentage_in_zone', 'contact_percentage_out_of_zone', 'swings_and_misses',
+        'swinging_strike_rate', 'whiff_rate'
+      ];
+    const isPitchingStat = pitchingStats.includes(category.toLowerCase());
+  
+    // Set the default stat group based on the category
+    if (!statGroup) {
+      statGroup = isPitchingStat ? 'pitching' : 'hitting';
+    }
+  
+    try {
+      const leadersData = await mlbAPIUtil.getLeaders(category, limit, statGroup);
+      const leaders = leadersData.leagueLeaders.find(leaderData => leaderData.statGroup === statGroup)?.leaders;
+  
+      if (!leaders) {
+        await interaction.reply(`No leaders found for the stat group: ${statGroup}`);
+        return;
+      }
+  
+      const visual = await commandUtil.generateLeadersVisual(leaders, category);
+  
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ files: [{ attachment: visual, name: 'leaders.png' }] });
+      } else {
+        await interaction.followUp({ files: [{ attachment: visual, name: 'leaders.png' }] });
+      }
+    } catch (error) {
+      console.error('Error in leadersHandler:', error);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply('There was an error fetching the leaders data. Please try again later.');
+      } else {
+        await interaction.followUp('There was an error fetching the leaders data. Please try again later.');
+      }
+    }
+  }
+  async function playerStatsHandler(interaction, playerName, year, splitType) {
+    try {
+        // Find the player
+        const allPlayers = await mlbAPIUtil.getAllPlayers();
+        
+        // Function to remove diacritics
+        const removeDiacritics = (str) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        
+        // Normalize the input player name
+        const normalizedPlayerName = removeDiacritics(playerName.toLowerCase());
+        
+        // Find the player with normalized name comparison
+        const player = allPlayers.find(p => 
+            removeDiacritics(`${p.firstLastName}`.toLowerCase()) === normalizedPlayerName
+        );
+        
+        if (!player) {
+            await interaction.editReply(`Player "${playerName}" not found.`);
+            return;
+        }
+        
+        const playerId = player.id;
+        const playerStats = await mlbAPIUtil.fetchPlayerStats(playerId, year, splitType);
+        const visual = await commandUtil.generatePlayerStatsVisual(playerStats, splitType);
+        
+        // Use followUp if additional messages are needed after the initial reply
+        await interaction.followUp({ files: [{ attachment: visual, name: 'player_stats.png' }] });
+    } catch (error) {
+        console.error('Error in playerStatsHandler:', error);
+        // Use editReply or followUp here as well, depending on the situation
+        await interaction.editReply('There was an error fetching the player stats. Please try again later.');
+    }
+  }
 function buildPitchingStatsMarkdown (pitchingStats, pitchMix, includeExtra = false) {
     let reply = '\n';
     if (!pitchingStats) {

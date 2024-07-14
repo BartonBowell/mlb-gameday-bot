@@ -1,6 +1,8 @@
 const globals = require('../config/globals');
 const ReconnectingWebSocket = require('reconnecting-websocket');
 const { LOG_LEVEL } = require('../config/globals');
+const jsdom = require('jsdom');
+const { JSDOM } = jsdom;
 const LOGGER = require('./logger')(process.env.LOG_LEVEL?.trim() || LOG_LEVEL.INFO);
 
 const endpoints = {
@@ -14,6 +16,75 @@ const endpoints = {
     hitter: (personId) => {
         return 'https://statsapi.mlb.com/api/v1/people/' + personId + '/stats?stats=season,statSplits,lastXGames&group=hitting&gameType=R&sitCodes=vl,vr,risp&limit=7';
     },
+    peopleStr: (personIds) => {
+        // Split the string into an array if it's not already an array
+        const idsArray = typeof personIds === 'string' ? personIds.split(',') : personIds;
+        return `https://statsapi.mlb.com/api/v1/people?personIds=${idsArray.join(',')}&hydrate=stats(type=season,groups=hitting,pitching)`;
+    },
+    standings: (date, leagueId, divisionId) => {
+        return `https://statsapi.mlb.com/api/v1/standings?date=${date}&leagueId=${leagueId}&division=${divisionId}`;
+    },
+    playerSplits: (personIds) => {
+        return `https://statsapi.mlb.com/api/v1/people?personIds=${personIds}&hydrate=stats(group=[hitting,pitching],type=[statSplits],sitCodes=[vr,vl])`;
+    },
+    lineupSplits: (gamePk, teamId) => {
+        return `https://statsapi.mlb.com/api/v1/schedule?hydrate=lineups&sportId=1&gamePk=${gamePk}&teamId=${teamId}`;
+    }
+    ,
+    pitcherStats: (personId) => {
+        return `https://statsapi.mlb.com/api/v1/people/${personId}?hydrate=stats(group=[pitching],type=[lastXGames,expectedStatistics],limit=3)`;
+    },
+    playerStatsSeason: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[season],season=${year})`;
+    },
+
+    playerStatsCareer: (playerId) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[career])`;
+    },
+
+    playerStatsVsLefty: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],season=${year},sitCodes=[vl])`;
+    },
+
+    playerStatsVsRighty: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],season=${year},sitCodes=[vr])`;
+    },
+
+    playerStatsBattingLeft: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting],type=[statSplits],season=${year},sitCodes=[l])`;
+    },
+
+    playerStatsBattingRight: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting],type=[statSplits],season=${year},sitCodes=[r])`;
+    },
+
+    playerStatsVsLeftyStarter: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],season=${year},sitCodes=[vls])`;
+    },
+
+    playerStatsVsRightyStarter: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],season=${year},sitCodes=[vrs])`;
+    },
+    playerStatsFirstHalf: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],season=${year},sitCodes=[h1])`;
+    },
+
+    playerStatsSecondHalf: (playerId, year) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],season=${year},sitCodes=[h2])`;
+    },
+
+    playerStatsYesterday: (playerId) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],dateFrom=yesterday,dateTo=yesterday)`;
+    },
+
+    playerStatsLast7Days: (playerId) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],dateFrom=last_7_days)`;
+    },
+
+    playerStatsLast30Days: (playerId) => {
+        return `https://statsapi.mlb.com/api/v1/people/${playerId}?hydrate=stats(group=[hitting,pitching],type=[statSplits],dateFrom=last_30_days)`;
+    }
+    ,
     liveFeed: (gamePk, fields = []) => {
         LOGGER.debug('https://statsapi.mlb.com/api/v1.1/game/' + gamePk + '/feed/live' + (fields.length > 0 ? '?fields=' + fields.join() : ''));
         return 'https://statsapi.mlb.com/api/v1.1/game/' + gamePk + '/feed/live' + (fields.length > 0 ? '?fields=' + fields.join() : '');
@@ -87,10 +158,245 @@ const endpoints = {
     },
     team: (teamId) => {
         return 'https://statsapi.mlb.com/api/v1/teams/' + teamId;
-    }
-};
+    },
+    marinersBullpenUsage: () => {
+        return 'https://www.rotowire.com/baseball/tables/bullpen-usage.php?team=SEA';
+      },
+      batterStatsVsPitcher: (personIds, pitcherId) => {
+        // Assuming pitcherId might be an object with an 'id' property
+        const effectivePitcherId = pitcherId.id ? pitcherId.id : pitcherId;
+      
+        const url = `https://statsapi.mlb.com/api/v1/people?personIds=${personIds}&hydrate=stats(group=[hitting],type=[vsPlayerTotal],opposingPlayerId=${effectivePitcherId},sportId=1)`;
+        console.log(`Constructed URL: ${url}`);
+        return url;
+      },
+      pitcherLastThree: (personId) => {
+        return `https://statsapi.mlb.com/api/v1/people/${personId}?hydrate=stats(group=[pitching],type=[lastXGames,expectedStatistics],limit=3)`;
+    } 
 
-module.exports = {
+};
+async function getStreaks(streakType, streakSpan, season, limit) {
+    const url = `https://statsapi.mlb.com/api/v1/stats/streaks?streakType=${streakType}&streakSpan=${streakSpan}&season=${season}&limit=${limit}`;
+  
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error fetching streaks data:', error);
+      throw error;
+    }
+  }
+async function getLeaders(category, limit, statGroup) {
+    const url = `https://statsapi.mlb.com/api/v1/stats/leaders?leaderCategories=${category}&season=${new Date().getFullYear()}&limit=${limit}&statGroup=${statGroup}`;
+  
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error fetching leaders data:', error);
+      throw error;
+    }
+  }
+
+
+
+
+// MLB-API-util.js
+async function getTeamByName(teamName) {
+    try {
+      const response = await fetch('https://statsapi.mlb.com/api/v1/teams?sportId=1');
+      const data = await response.json();
+      return data.teams.find(team => team.name.toLowerCase() === teamName.toLowerCase());
+    } catch (error) {
+      console.error('Error fetching team data:', error);
+      throw error;
+    }
+  }
+  async function getTeamSchedule(teamId) {
+    try {
+      const currentYear = new Date().getFullYear();
+      const response = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=${teamId}&startDate=${currentYear}-01-01&endDate=${currentYear}-12-31&hydrate=team,linescore(matchup,runners),game(content(summary,media(epg)),tickets)&season=${currentYear}`);
+      const data = await response.json();
+      return data.dates.map(date => ({
+        date: date.date,
+        gameResult: date.games[0].teams.home.team.id === teamId ? date.games[0].teams.home.isWinner : date.games[0].teams.away.isWinner
+      }));
+    } catch (error) {
+      console.error('Error fetching team schedule:', error);
+      throw error;
+    }
+  }
+  async function fetchPlayerStats  (playerId, year, splitType, splitValue) {
+    let url;
+
+    const splitTypeLower = splitType.toLowerCase();
+
+    switch(splitTypeLower) {
+        case 'season':
+            url = endpoints.playerStatsSeason(playerId, year);
+            break;
+        case 'career':
+            url = endpoints.playerStatsCareer(playerId);
+            break;
+        case 'vs_left': // Now checking against the lowercase version
+            url = endpoints.playerStatsVsLefty(playerId, year);
+            break;
+        case 'vs_right':
+            url = endpoints.playerStatsVsRighty(playerId, year);
+            break;
+        case 'batting_left':
+            url = endpoints.playerStatsBattingLeft(playerId, year);
+            break;
+        case 'batting_right':
+            url = endpoints.playerStatsBattingRight(playerId, year);
+            break;
+        case 'vs_left_starter':
+            url = endpoints.playerStatsVsLeftyStarter(playerId, year);
+            break;
+        case 'vs_right_starter':
+            url = endpoints.playerStatsVsRightyStarter(playerId, year);
+            break;
+            case 'h1':
+                url = endpoints.playerStatsFirstHalf(playerId, year);
+                break;
+            case 'h2':
+                url = endpoints.playerStatsSecondHalf(playerId, year);
+                break;
+            case 'd1':
+                url = endpoints.playerStatsYesterday(playerId);
+                break;
+            case 'd7':
+                url = endpoints.playerStatsLast7Days(playerId);
+                break;
+            case 'd30':
+                url = endpoints.playerStatsLast30Days(playerId);
+                break;
+        default:
+            throw new Error(`Invalid split type: ${splitType}`);
+    }
+
+    console.log("Fetching data from URL:", url);
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        
+        if (data.people && data.people[0] && data.people[0].stats) {
+            return data.people[0];
+        } else {
+            throw new Error('No stats data found in the response');
+        }
+    } catch (error) {
+        console.error("Error fetching player stats:", error);
+        throw error;
+    }
+}
+  async function getDivisionStandingsByTeam(teamId) {
+    try {
+      const currentYear = new Date().getFullYear();
+      const response = await fetch(`https://statsapi.mlb.com/api/v1/standings?leagueId=103,104&season=${currentYear}&standingsTypes=regularSeason&hydrate=team(division)`);
+      const data = await response.json();
+  
+      // Flatten the teamRecords arrays from all leagues
+      const allTeamRecords = data.records.flatMap(record => record.teamRecords);
+  
+      // Find the team's standings
+      const teamStandings = allTeamRecords.find(standing => standing.team.id === teamId);
+  
+      if (!teamStandings) {
+        console.warn(`No standings data found for team with ID ${teamId}`);
+        return null;
+      }
+  
+      // Extract the required data from the team's standings
+      const standingsData = {
+        divisionRank: teamStandings.divisionRank,
+        gamesBack: teamStandings.divisionGamesBack,
+        lastUpdated: teamStandings.lastUpdated
+      };
+  
+      return standingsData;
+    } catch (error) {
+      console.error('Error fetching division standings:', error);
+      throw error;
+    }
+  }
+  async function getDivisionStandings(date, leagueId, divisionId) {
+    const url = `https://statsapi.mlb.com/api/v1/standings?date=${date}&leagueId=${leagueId}&division=${divisionId}`;
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error("Could not fetch division standings:", error);
+        return null;
+    }
+}
+async function getAllPlayers() {
+    const url = 'https://statsapi.mlb.com/api/v1/sports/1/players?season=2024';
+  
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data.people;
+    } catch (error) {
+      console.error('Error fetching all players:', error);
+      throw error;
+    }
+  }
+  
+  async function getAllNlAllstars() {
+    const url = 'https://statsapi.mlb.com/api/v1/awards/NLAS/recipients?sportId=1&league=NL&season=2024';
+    console.log("Fetching NL All-Stars from URL:", url);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data; // Change this line
+    } catch (error) {
+      console.error('Error fetching NL All-Stars:', data);
+      throw error;
+    }
+  }
+
+  async function getAllAlAllstars() {
+    const url = 'https://statsapi.mlb.com/api/v1/awards/ALAS/recipients?sportId=1&league=AL&season=2024';
+    console.log("Fetching AL All-Stars from URL:", url);
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data; // Change this line
+    } catch (error) {
+      console.error('Error fetching AL All-Stars:', data);
+      throw error;
+    }
+  }
+
+
+module.exports = {getTeamByName,getDivisionStandingsByTeam,getTeamSchedule,getDivisionStandings,getLeaders,getStreaks,
+fetchPlayerStats,getAllPlayers,getAllAlAllstars,getAllNlAllstars,
     currentGames: async () => {
         const twentyFourHoursFromNow = globals.DATE ? new Date(globals.DATE) : new Date();
         const twentyFourHoursInThePast = globals.DATE ? new Date(globals.DATE) : new Date();
@@ -111,7 +417,14 @@ module.exports = {
             .catch(function (err) {
                 throw err;
             });
-    },
+        },pitcherStats: async (personId) => {
+            const url = endpoints.pitcherStats(personId); // Construct the URL for pitcher stats
+            console.log("Fetching pitcher stats from URL:", url); // Print the URL to the console
+            const response = await fetch(url); // Fetch the data
+            const data = await response.json(); // Convert the data to JSON
+            console.log("Received pitcher stats data:", data); // Debug: Print the data to the console
+            return data; // Return the JSON data
+        },
     liveFeed: async (gamePk, fields) => {
         return (await fetch(endpoints.liveFeed(gamePk, fields))).json();
     },
@@ -127,8 +440,26 @@ module.exports = {
     playMetrics: async (gamePk) => {
         return (await fetch(endpoints.playMetrics(gamePk))).json();
     },
+    playerSplits: async (personId) => {
+        return (await fetch(endpoints.playerSplits(personId))).json();
+    }
+    ,
+    batterStatsVsPitcher: async (personIds, pitcherId) => {
+        const effectivePitcherId = pitcherId.id ? pitcherId.id : pitcherId;
+      
+        const url = `https://statsapi.mlb.com/api/v1/people?personIds=${personIds}&hydrate=stats(group=[hitting],type=[vsPlayerTotal],opposingPlayerId=${effectivePitcherId},sportId=1)`;
+        
+        console.log(`Fetching data from: ${url}`);
+        return (await fetch(url)).json();
+      },
+    lineupSplits: async (gamePk, teamId) => {
+        return (await fetch(endpoints.lineupSplits(gamePk, teamId))).json();
+    }
+    ,
     spot: async (personId) => {
-        return (await fetch(endpoints.spot(personId))).arrayBuffer();
+        const url = endpoints.spot(personId); // Assuming endpoints.spot constructs the URL
+        console.log("Fetching spot image from URL:", url); // Print the URL to the console
+        return (await fetch(url)).arrayBuffer();
     },
     schedule: async (startDate, endDate, teamId) => {
         return (await fetch(endpoints.schedule(startDate, endDate, teamId))).json();
@@ -198,6 +529,9 @@ module.exports = {
     people: async (personIds) => {
         return (await fetch(endpoints.people(personIds))).json();
     },
+    peopleStr: async (personIds) => {
+        return (await fetch(endpoints.peopleStr(personIds))).json();
+    },
     liveFeedBoxScoreNamesOnly: async (gamePk) => {
         return (await fetch(endpoints.liveFeedBoxScoreNamesOnly(gamePk))).json();
     },
@@ -207,6 +541,7 @@ module.exports = {
     xParks: async (gamePk, playId) => {
         return (await fetch(endpoints.xParks(gamePk, playId))).json();
     },
+
     savantGameFeed: async (gamePk) => {
         try {
             return (await fetch(endpoints.savantGameFeed(gamePk),
@@ -224,5 +559,24 @@ module.exports = {
     },
     team: async (teamId) => {
         return (await fetch(endpoints.team(teamId))).json();
+    },marinersBullpenUsage: async () => {
+        try {
+          const response = await fetch(endpoints.marinersBullpenUsage());
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          return await response.text();
+        } catch (error) {
+          console.error('Error fetching Mariners bullpen usage data:', error);
+          throw error;
+        }
+      }
+      ,
+    pitcherLastThree: async (personId) => {
+        const url = endpoints.pitcherLastThree(personId);
+        const response = await fetch(url); // Fetch the data
+        const data = await response.json(); // Convert the data to JSON
+        return data; // Return the JSON data
     }
-};
+    };
+    

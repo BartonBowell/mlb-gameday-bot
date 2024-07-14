@@ -17,8 +17,6 @@ async function statusPoll (bot) {
         const now = globals.DATE ? new Date(globals.DATE) : new Date();
         try {
             const currentGames = await mlbAPIUtil.currentGames();
-            LOGGER.trace('Current game PKs: ' + JSON.stringify(currentGames
-                .map(game => { return { key: game.gamePk, date: game.officialDate, status: game.status.statusCode }; }), null, 2));
             currentGames.sort((a, b) => Math.abs(now - new Date(a.gameDate)) - Math.abs(now - new Date(b.gameDate)));
             globalCache.values.currentGames = currentGames;
             const nearestGames = currentGames.filter(game => game.officialDate === currentGames[0].officialDate); // could be more than one game for double-headers.
@@ -147,26 +145,23 @@ async function reportAnyMissedEvents (atBat, bot, gamePk, atBatIndex) {
         await processAndPushPlay(bot, currentPlayProcessor.process(missedEvent), gamePk, atBatIndex);
     }
 }
-
-async function processAndPushPlay (bot, play, gamePk, atBatIndex) {
-    if (play.reply
-        && play.reply.length > 0
-        && !globalCache.values.game.reportedDescriptions
-            .find(reportedDescription => reportedDescription.description === play.description && reportedDescription.atBatIndex === atBatIndex)) {
+async function processAndPushPlay(bot, play, gamePk, atBatIndex) {
+    if (play.reply && play.reply.length > 0 && !globalCache.values.game.reportedDescriptions.find(reportedDescription => reportedDescription.description === play.description && reportedDescription.atBatIndex === atBatIndex)) {
         globalCache.values.game.reportedDescriptions.push({ description: play.description, atBatIndex });
         if (play.isComplete) {
             globalCache.values.game.lastReportedCompleteAtBatIndex = atBatIndex;
         }
+        // Retrieve the current score
+        const awayScore = globalCache.values.game.currentLiveFeed.liveData.linescore.teams.away.runs;
+        const homeScore = globalCache.values.game.currentLiveFeed.liveData.linescore.teams.home.runs;
+        const scoreText = `${globalCache.values.game.currentLiveFeed.gameData.teams.away.abbreviation} ${awayScore} - ${homeScore} ${globalCache.values.game.currentLiveFeed.gameData.teams.home.abbreviation}`;
+        
+        // Modify the title to include the score
         const embed = new EmbedBuilder()
-            .setTitle(deriveHalfInning(globalCache.values.game.currentLiveFeed.liveData.plays.currentPlay.about.halfInning) + ' ' +
-                globalCache.values.game.currentLiveFeed.liveData.plays.currentPlay.about.inning + ', ' +
-                globalCache.values.game.currentLiveFeed.gameData.teams.away.abbreviation + ' vs. ' +
-                globalCache.values.game.currentLiveFeed.gameData.teams.home.abbreviation + (play.isScoringPlay ? ' - Scoring Play \u2757' : ''))
+            .setTitle(`${deriveHalfInning(globalCache.values.game.currentLiveFeed.liveData.plays.currentPlay.about.halfInning)} ${globalCache.values.game.currentLiveFeed.liveData.plays.currentPlay.about.inning}, ${scoreText}${play.isScoringPlay ? ' - Scoring Play \u2757' : ''}`)
             .setDescription(play.reply)
-            .setColor((globalCache.values.game.currentLiveFeed.liveData.plays.currentPlay.about.halfInning === 'top'
-                ? globalCache.values.game.awayTeamColor
-                : globalCache.values.game.homeTeamColor
-            ));
+            .setColor((globalCache.values.game.currentLiveFeed.liveData.plays.currentPlay.about.halfInning === 'top' ? globalCache.values.game.awayTeamColor : globalCache.values.game.homeTeamColor));
+        
         const messages = [];
         for (const channelSubscription of globalCache.values.subscribedChannels) {
             const returnedChannel = await bot.channels.fetch(channelSubscription.channel_id);
@@ -187,6 +182,11 @@ async function processAndPushPlay (bot, play, gamePk, atBatIndex) {
     }
 }
 
+
+function isStrikeout(play) {
+    return play.eventType === 'strikeout';
+}
+
 async function sendMessage (returnedChannel, embed, messages) {
     LOGGER.debug('Sending!');
     const message = await returnedChannel.send({
@@ -197,7 +197,7 @@ async function sendMessage (returnedChannel, embed, messages) {
 
 async function sendDelayedMessage (play, gamePk, channelSubscription, returnedChannel, embed) {
     setTimeout(async () => {
-        LOGGER.debug('Sending!');
+        LOGGER.debug('Sending delayed!');
         const message = await returnedChannel.send({
             embeds: [embed]
         });
@@ -208,7 +208,7 @@ async function sendDelayedMessage (play, gamePk, channelSubscription, returnedCh
     }, channelSubscription.delay * 1000);
 }
 
-async function maybePopulateAdvancedStatcastMetrics (play, messages, gamePk) {
+async function maybePopulateAdvancedStatcastMetrics(play, messages, gamePk) {
     if (play.isInPlay) {
         if (play.playId) {
             try {
@@ -223,11 +223,57 @@ async function maybePopulateAdvancedStatcastMetrics (play, messages, gamePk) {
             LOGGER.info('Play has no play ID.');
             notifySavantDataUnavailable(messages);
         }
+    } else if (play.eventType === 'strikeout') {
+        // Handle strikeout events
+        try {
+            
+            LOGGER.debug('Handling strikeout event.' + JSON.stringify(play));
+            const { outsideZone} = await getStrikeoutDetails(play, gamePk);
+            if (outsideZone) {
+                LOGGER.debug(`Strikeout.`);
+                // Append strikeout details to the reply
+                const updatedReply = `${play.reply}\nThe pitch was outside the strike zone.`;
+                messages.forEach(message => {
+                    const receivedEmbed = EmbedBuilder.from(message.embeds[0]);
+                    receivedEmbed.setDescription(updatedReply);
+                    message.edit({ embeds: [receivedEmbed] });
+                });
+            }
+        } catch (e) {
+            LOGGER.error('There was a problem fetching strikeout details!');
+            LOGGER.error(e);
+        }
     } else {
-        LOGGER.debug('Skipping savant poll - not in play.');
+        LOGGER.debug('Skipping savant poll for ' + JSON.stringify(play) + '- not in play.');
     }
 }
+async function getStrikeoutDetails(play, gamePk) {
+    let outsideZone = false;
+    
+    
+    const currentLiveFeed = globalCache.values.game.currentLiveFeed;
+    LOGGER.debug(JSON.stringify(currentLiveFeed) + "ASDASD ASDAS DASD");
+    if (currentLiveFeed && currentLiveFeed.liveData.plays.currentPlay.playEvents) {
+        const strikeZone = {
+            top: currentLiveFeed.liveData.plays.currentPlay.playEvents[0].pitchData.strikeZoneTop ?? 0,
+            bottom: currentLiveFeed.liveData.plays.currentPlay.playEvents[0].pitchData.strikeZoneBottom ?? 0,
+            left: -0.7083 - 0.121,
+            right: 0.7083 + 0.121
+        };
+        const px = currentLiveFeed.liveData.plays.currentPlay.playEvents[0].pitchData.coordinates?.pX ?? 0;
+        const pz = currentLiveFeed.liveData.plays.currentPlay.playEvents[0].pitchData.coordinates?.pZ ?? 0;
+        outsideZone =
+            pz < strikeZone.bottom ||
+            pz > strikeZone.top ||
+            px < strikeZone.left ||
+            px > strikeZone.right;
+            LOGGER.debug(`Is the pitch outside the zone? ${outsideZone}`);
+    } else {
+        LOGGER.warn('pitchData is missing or incomplete for the strikeout event.');
+    }
 
+    return { outsideZone };
+}
 function notifySavantDataUnavailable (messages) {
     for (let i = 0; i < messages.length; i ++) {
         const receivedEmbed = EmbedBuilder.from(messages[i].embeds[0]);
@@ -254,7 +300,7 @@ async function pollForSavantData (gamePk, playId, messages, hitDistance) {
             const matchingPlay = gameFeed?.team_away?.find(play => play?.play_id === playId)
                 || gameFeed?.team_home?.find(play => play?.play_id === playId);
             if (matchingPlay && (matchingPlay.xba || matchingPlay.contextMetrics?.homeRunBallparks !== undefined)) {
-                module.exports.processMatchingPlay(matchingPlay, messages, messageTrackers, playId, hitDistance);
+                module.exports.processMatchingPlay(gamePk,matchingPlay, messages, messageTrackers, playId, hitDistance);
             }
             attempts ++;
             setTimeout(async () => { await pollingFunction(); }, globals.SAVANT_POLLING_INTERVAL);
@@ -264,12 +310,52 @@ async function pollForSavantData (gamePk, playId, messages, hitDistance) {
         }
     };
     await pollingFunction();
-}
+}async function getBallparkOutlier(gamePk, playId, homeRunBallparks, homeParkId, outliers = [1, 2, 3, 27, 28, 29]) {
+    try {
+        const ballpark = await mlbAPIUtil.xParks(gamePk, playId);
+        let outlierText = '';
 
-function processMatchingPlay (matchingPlay, messages, messageTrackers, playId, hitDistance) {
-    for (let i = 0; i < messages.length; i ++) {
+        if (homeRunBallparks === 0) {
+            outlierText = ' (gone nowhere!)';
+        } else if (homeRunBallparks === 30) {
+            outlierText = ' (gone everywhere!)';
+        } else if (outliers.includes(homeRunBallparks)) {
+            if (ballpark.hr && ballpark.hr.length > 0) {
+                const parks = ballpark.hr.map(park => park.name).join(', ');
+                outlierText = ` (only a HR at ${parks})`;
+
+                if (ballpark.hr.some(park => park.id === homeParkId)) {
+                    outlierText += ' 🏠';
+                } else if (ballpark.hr.length === 1) {
+                    outlierText += ' 🦄';
+                }
+            } else if (ballpark.not && ballpark.not.length > 0) {
+                const parks = ballpark.not.map(park => park.name).join(', ');
+                outlierText = ` (a HR at every park except ${parks})`;
+
+                if (ballpark.not.some(park => park.id === homeParkId)) {
+                    outlierText += ' 🏠';
+                } else if (ballpark.not.length === 1) {
+                    outlierText += ' 🦄';
+                }
+            }
+        }
+
+        LOGGER.debug(`Editing with HR/Park: ${playId}`);
+        LOGGER.trace(`Edited: message-id-1`);
+        LOGGER.debug(`Ballpark outlier detected: ${outlierText}`);
+
+        return outlierText;
+    } catch (error) {
+        LOGGER.error(`Error fetching ballpark data for gamePk ${gamePk} and playId ${playId}: ${error.message}`);
+        return '';
+    }
+}
+function processMatchingPlay(gamePk, matchingPlay, messages, messageTrackers, playId, hitDistance) {
+    for (let i = 0; i < messages.length; i++) {
         const receivedEmbed = EmbedBuilder.from(messages[i].embeds[0]);
         let description = messages[i].embeds[0].description;
+
         if (matchingPlay.xba && description.includes('xBA: Pending...')) {
             LOGGER.debug('Editing with xba: ' + playId);
             description = description.replaceAll('xBA: Pending...', 'xBA: ' + matchingPlay.xba +
@@ -278,26 +364,55 @@ function processMatchingPlay (matchingPlay, messages, messageTrackers, playId, h
             messages[i].edit({
                 embeds: [receivedEmbed]
             }).then((m) => LOGGER.trace('Edited: ' + m.id)).catch((e) => console.error(e));
-            if (hitDistance && hitDistance < 300) {
-                LOGGER.debug('Found xba, done polling for: ' + playId);
-                messageTrackers.find(tracker => tracker.id === messages[i].id).done = true;
+        }
+
+        if (hitDistance && hitDistance >= 300 &&
+            matchingPlay.contextMetrics?.homeRunBallparks !== undefined &&
+            description.includes('HR/Park: Pending...')) {
+            LOGGER.debug('Editing with HR/Park: ' + playId);
+            let hrParkText = 'HR/Park: ' + matchingPlay.contextMetrics.homeRunBallparks + '/30';
+            
+            if (hitDistance && hitDistance >= 300 &&
+                matchingPlay.contextMetrics?.homeRunBallparks !== undefined &&
+                description.includes('HR/Park: Pending...')) {
+                LOGGER.debug('Editing with HR/Park: ' + playId);
+                let hrParkText = 'HR/Park: ' + matchingPlay.contextMetrics.homeRunBallparks + '/30';
+                // Assuming globalCache and globals are already defined and contain the necessary structures
+                const homeParkId = globalCache.values.game.currentLiveFeed.gameData.venue.id;
+                console.log('Home park ID: ' + homeParkId)
+
+            // Now homeParkId contains the ID of the home team, which is used as the homeParkId
+                // Check if homeRunBallparks is an outlier (0, 1, 29, or 30)
+                if ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30].includes(matchingPlay.contextMetrics.homeRunBallparks)) {
+                    getBallparkOutlier(gamePk, playId, matchingPlay.contextMetrics.homeRunBallparks, homeParkId, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30])
+                        .then(outlier => {
+                            hrParkText += outlier; // Append the outlier symbol or text
+                            description = description.replaceAll('HR/Park: Pending...', hrParkText);
+                            receivedEmbed.setDescription(description);
+                            messages[i].edit({
+                                embeds: [receivedEmbed]
+                            }).then((m) => LOGGER.trace('Edited: ' + m.id)).catch((e) => console.error(e));
+                        });
+                } else {
+                    // For non-outlier values, just replace the placeholder with the hrParkText
+                    description = description.replaceAll('HR/Park: Pending...', hrParkText);
+                    receivedEmbed.setDescription(description);
+                    messages[i].edit({
+                        embeds: [receivedEmbed]
+                    }).then((m) => LOGGER.trace('Edited: ' + m.id)).catch((e) => console.error(e));
+                }
+            } else {
+                description = description.replaceAll('HR/Park: Pending...', hrParkText);
+                receivedEmbed.setDescription(description);
+                messages[i].edit({
+                    embeds: [receivedEmbed]
+                }).then((m) => LOGGER.trace('Edited: ' + m.id)).catch((e) => console.error(e));
             }
         }
-        if (hitDistance && hitDistance >= 300
-            && matchingPlay.contextMetrics.homeRunBallparks !== undefined
-            && description.includes('HR/Park: Pending...')) {
-            LOGGER.debug('Editing with HR/Park: ' + playId);
-            description = description.replaceAll('HR/Park: Pending...', 'HR/Park: ' +
-                matchingPlay.contextMetrics.homeRunBallparks + '/30' +
-                (matchingPlay.contextMetrics.homeRunBallparks === 30 ? '\u203C\uFE0F' : ''));
-            receivedEmbed.setDescription(description);
-            messages[i].edit({
-                embeds: [receivedEmbed]
-            }).then((m) => LOGGER.trace('Edited: ' + m.id)).catch((e) => console.error(e));
-            if (matchingPlay.xba) {
-                LOGGER.debug('Found all metrics: done polling for: ' + playId);
-                messageTrackers.find(tracker => tracker.id === messages[i].id).done = true;
-            }
+
+        if (matchingPlay.xba && matchingPlay.contextMetrics?.homeRunBallparks !== undefined) {
+            LOGGER.debug('Found all metrics: done polling for: ' + playId);
+            messageTrackers.find(tracker => tracker.id === messages[i].id).done = true;
         }
     }
 }
